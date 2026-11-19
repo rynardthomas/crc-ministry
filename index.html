@@ -27,6 +27,13 @@
   .boot { position: fixed; inset: 0; display: grid; place-items: center; z-index: 1; background: #07070a; transition: opacity .3s; pointer-events: none; }
   .boot img { width: 96px; height: 96px; border-radius: 26px; animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .55; transform: scale(.97); } }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; padding: 22px 22px calc(22px + env(safe-area-inset-bottom)); background: #121218; border-top: 1px solid #2a2a33; border-radius: 22px 22px 0 0; transform: translateY(110%); transition: transform .3s; text-align: left; }
+  .sheet.on { transform: none; }
+  .sheet h2 { font-size: 20px; margin: 0 0 6px; } .sheet p { margin: 0 0 16px; color: #9a9aa6; }
+  .sheet .row { display: flex; gap: 10px; } .sheet button { font: inherit; font-weight: 600; padding: 12px 20px; border-radius: 999px; border: 1px solid #33333d; background: transparent; color: #f2f2f5; }
+  .sheet button.pri { background: #F5A524; color: #000; border-color: #F5A524; }
+  .banner { position: fixed; left: 10px; right: 10px; top: calc(10px + env(safe-area-inset-top)); z-index: 6; padding: 12px 14px; border-radius: 16px; background: #1b1b22; border: 1px solid #33333d; box-shadow: 0 10px 30px rgba(0,0,0,.5); display: none; }
+  .banner.on { display: block; } .banner b { display: block; margin-bottom: 2px; } .banner span { color: #b5b5c0; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -34,6 +41,8 @@
 <iframe id="app" title="CRC Ministry" allow="camera; microphone; clipboard-write; fullscreen; web-share"></iframe>
 <div class="msg" id="offline"><div><img src="icon-192.png" alt=""><h1>No connection</h1><p>The app needs signal to open. Things you saved on your phone are safe and will send once you're back online.</p><button onclick="start()">Try again</button></div></div>
 <div class="msg" id="setup"><div><img src="icon-192.png" alt=""><h1>Almost there</h1><p>Open <b>index.html</b> and paste the app link (ends in <b>/exec</b>) where it says PASTE-YOUR-APP-LINK-HERE.</p></div></div>
+<div class="sheet" id="pushSheet"><h2>🔔 Turn on notifications?</h2><p>Get a heads-up when you're rostered, when someone needs a swap, and before Sunday. You can switch them off any time in the app's menu.</p><div class="row"><button class="pri" id="pushAllow">Allow</button><button id="pushLater">Not now</button></div></div>
+<div class="banner" id="banner"><b></b><span></span></div>
 <script>
   function start() {
     var off = document.getElementById('offline'), frame = document.getElementById('app'), boot = document.getElementById('boot');
@@ -46,6 +55,59 @@
     setTimeout(function () { boot.style.opacity = 0; }, 6000);
   }
   window.addEventListener('online', function () { if (document.getElementById('offline').classList.contains('on')) start(); });
+  // ── notifications (Firebase Cloud Messaging) ──
+  var FB = { apiKey: 'AIzaSyBObfXE0uaPMeOuN001X12g6JQaHkwIo5w', authDomain: 'crc-ministry-app.firebaseapp.com', projectId: 'crc-ministry-app', storageBucket: 'crc-ministry-app.firebasestorage.app', messagingSenderId: '717290466939', appId: '1:717290466939:web:a492528dbc1b9376afbcde' };
+  var VAPID = 'BLZx4F02vuzGvMZoZRU9rZj7tqOAsG8tIWnRMGn9pyeRxukymo7yUWpHG5X_N8nWybQ2ArXpFCGFE2ShcXRSG1g';
+  var SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
+  var PKEY = 'crc_push_v1', appWin = null, appOrigin = '';
+  function pushInfo() { try { return JSON.parse(localStorage.getItem(PKEY) || '{}'); } catch (x) { return {}; } }
+  function pushSave(o) { try { localStorage.setItem(PKEY, JSON.stringify(o)); } catch (x) {} }
+  var isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent), standalone = window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  function pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+  function loadScript(src) { return new Promise(function (ok, no) { var s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = no; document.head.appendChild(s); }); }
+  var fbReady = null;
+  function firebaseReady() {
+    if (!fbReady) fbReady = loadScript(SDK + 'firebase-app-compat.js').then(function () { return loadScript(SDK + 'firebase-messaging-compat.js'); }).then(function () {
+      if (!firebase.apps.length) firebase.initializeApp(FB);
+      var m = firebase.messaging();
+      m.onMessage(function (p) { var n = p.notification || p.data || {}; showBanner(n.title, n.body); });
+      return m;
+    });
+    return fbReady;
+  }
+  function getPushToken() {
+    return Promise.all([firebaseReady(), navigator.serviceWorker.register('sw.js')]).then(function (r) { return r[0].getToken({ vapidKey: VAPID, serviceWorkerRegistration: r[1] }); })
+      .then(function (t) { var i = pushInfo(); if (t && t !== i.token) { i.token = t; i.saved = 0; pushSave(i); } return t; });
+  }
+  function tellApp(msg) { if (appWin && appOrigin) try { appWin.postMessage(msg, appOrigin); } catch (x) {} }
+  function status() {
+    var i = pushInfo(), perm = pushSupported() ? Notification.permission : 'default';
+    return { crc: 'push-status', supported: pushSupported(), permission: perm, token: perm === 'granted' ? (i.token || '') : '', fresh: !!(i.saved && i.token && Date.now() - i.saved < 7 * 864e5), ios: isIOS, standalone: standalone };
+  }
+  function showBanner(t, b) { var el = document.getElementById('banner'); el.querySelector('b').textContent = t || ''; el.querySelector('span').textContent = b || ''; el.classList.add('on'); clearTimeout(showBanner.t); showBanner.t = setTimeout(function () { el.classList.remove('on'); }, 6000); }
+  document.getElementById('banner').onclick = function () { this.classList.remove('on'); };
+  document.getElementById('pushLater').onclick = function () { document.getElementById('pushSheet').classList.remove('on'); };
+  document.getElementById('pushAllow').onclick = function () {
+    document.getElementById('pushSheet').classList.remove('on');
+    Notification.requestPermission().then(function (p) {   // must run straight from the tap (iPhone rule)
+      if (p !== 'granted') return tellApp({ crc: 'push-denied' });
+      return getPushToken().then(function (t) { if (t) tellApp({ crc: 'push-token', token: t }); });
+    }).catch(function () { tellApp({ crc: 'push-denied' }); });
+  };
+  function onPushMessage(e) {
+    var d = e.data; appWin = e.source; appOrigin = e.origin;
+    if (d.crc === 'push-status') {
+      if (pushSupported() && Notification.permission === 'granted') getPushToken().then(function () { tellApp(status()); }).catch(function () { tellApp(status()); });
+      else tellApp(status());
+    }
+    if (d.crc === 'push-ask') {
+      if (!pushSupported()) return tellApp(status());
+      if (Notification.permission === 'denied') return tellApp({ crc: 'push-denied' });
+      firebaseReady().catch(function () {});   // warm up while they read
+      document.getElementById('pushSheet').classList.add('on');
+    }
+    if (d.crc === 'push-saved') { var i = pushInfo(); if (i.token === d.token) { i.saved = Date.now(); pushSave(i); } }
+  }
   // keep the sign-in here (this page's storage lasts; the app frame's doesn't on iPhone) and hand it only to our own app frame
   var KEY = 'crc_token_v1';
   function fromOurApp(src) { var w = src; for (var i = 0; i < 6 && w; i++) { if (w === document.getElementById('app').contentWindow) return true; if (w === w.parent) break; w = w.parent; } return false; }
@@ -54,6 +116,7 @@
     try {
       if (e.data.crc === 'hello') e.source.postMessage({ crc: 'token', token: localStorage.getItem(KEY) || '' }, e.origin);
       if (e.data.crc === 'token') { if (e.data.token) localStorage.setItem(KEY, e.data.token); else localStorage.removeItem(KEY); }
+      if (/^push-/.test(e.data.crc)) onPushMessage(e);
     } catch (x) {}
   });
   start();

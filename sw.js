@@ -1,5 +1,9 @@
 /* Keeps the launcher itself (this page + icons) on the phone so it opens instantly, even before the app loads. */
-var CACHE = 'crc-launcher-v2';
+var CACHE = 'crc-launcher-v3';
+/* notifications: Firebase shows them when the app is closed, and opens the app when one is tapped */
+importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js', 'https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js');
+firebase.initializeApp({ apiKey: 'AIzaSyBObfXE0uaPMeOuN001X12g6JQaHkwIo5w', authDomain: 'crc-ministry-app.firebaseapp.com', projectId: 'crc-ministry-app', storageBucket: 'crc-ministry-app.firebasestorage.app', messagingSenderId: '717290466939', appId: '1:717290466939:web:a492528dbc1b9376afbcde' });
+firebase.messaging();
 var FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 self.addEventListener('install', function (e) { e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(FILES); })); self.skipWaiting(); });
 self.addEventListener('activate', function (e) {
