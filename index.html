@@ -46,6 +46,16 @@
     setTimeout(function () { boot.style.opacity = 0; }, 6000);
   }
   window.addEventListener('online', function () { if (document.getElementById('offline').classList.contains('on')) start(); });
+  // keep the sign-in here (this page's storage lasts; the app frame's doesn't on iPhone) and hand it only to our own app frame
+  var KEY = 'crc_token_v1';
+  function fromOurApp(src) { var w = src; for (var i = 0; i < 6 && w; i++) { if (w === document.getElementById('app').contentWindow) return true; if (w === w.parent) break; w = w.parent; } return false; }
+  window.addEventListener('message', function (e) {
+    if (!/^https:\/\/[a-z0-9-]+-script\.googleusercontent\.com$/.test(e.origin) || !e.data || !fromOurApp(e.source)) return;
+    try {
+      if (e.data.crc === 'hello') e.source.postMessage({ crc: 'token', token: localStorage.getItem(KEY) || '' }, e.origin);
+      if (e.data.crc === 'token') { if (e.data.token) localStorage.setItem(KEY, e.data.token); else localStorage.removeItem(KEY); }
+    } catch (x) {}
+  });
   start();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
 </script>
