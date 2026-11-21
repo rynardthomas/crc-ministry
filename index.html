@@ -108,6 +108,47 @@
     }
     if (d.crc === 'push-saved') { var i = pushInfo(); if (i.token === d.token) { i.saved = Date.now(); pushSave(i); } }
   }
+  // audition recording: the app's own frame can't use the microphone (Google's frames block it), so this page records and hands the clip back
+  var REC = { stream: null, r: null, cancel: false };
+  function recSay(e, m) { try { e.source.postMessage(m, e.origin); } catch (x) {} }
+  function recRelease() { if (REC.stream) REC.stream.getTracks().forEach(function (t) { t.stop(); }); REC.stream = null; }
+  function recGet() {
+    if (REC.stream && REC.stream.active) return Promise.resolve(REC.stream);
+    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }).then(function (s) { REC.stream = s; return s; });
+  }
+  function recErr(e, err) { recSay(e, { crc: 'rec-error', ios: isIOS, denied: !!err && (err.name === 'NotAllowedError' || err.name === 'SecurityError' || err.name === 'PermissionDeniedError'), msg: String((err && (err.message || err.name)) || err) }); }
+  function onRecMessage(e) {
+    var d = e.data;
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder)) return recSay(e, { crc: 'rec-error', unsupported: true });
+    if (d.crc === 'rec-arm') { recSay(e, { crc: 'rec-asking' }); recGet().then(function () { recSay(e, { crc: 'rec-armed' }); }).catch(function (err) { recErr(e, err); }); }
+    if (d.crc === 'rec-start') {
+      if (REC.r && REC.r.state === 'recording') return;
+      recGet().then(function (stream) {
+        var types = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+        var mime = MediaRecorder.isTypeSupported ? types.filter(function (t) { return MediaRecorder.isTypeSupported(t); })[0] : '';
+        var r = mime ? new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 96000 }) : new MediaRecorder(stream), chunks = [], t0 = Date.now(), ctx = null, an = null, buf = null;
+        REC.r = r; REC.cancel = false;
+        try { ctx = new (window.AudioContext || window.webkitAudioContext)(); an = ctx.createAnalyser(); an.fftSize = 512; ctx.createMediaStreamSource(stream).connect(an); buf = new Uint8Array(an.fftSize); if (ctx.resume) ctx.resume(); } catch (x) { an = null; }
+        var tick = setInterval(function () {
+          var lv = 0; if (an) { an.getByteTimeDomainData(buf); for (var i = 0; i < buf.length; i++) lv = Math.max(lv, Math.abs(buf[i] - 128) / 128); }
+          var secs = Math.round((Date.now() - t0) / 1000); recSay(e, { crc: 'rec-tick', secs: secs, level: lv });
+          if (secs >= 180 && r.state === 'recording') r.stop();
+        }, 200);
+        r.ondataavailable = function (ev) { if (ev.data && ev.data.size) chunks.push(ev.data); };
+        r.onstop = function () {
+          clearInterval(tick); try { if (ctx) ctx.close(); } catch (x) {}
+          var secs = Math.round((Date.now() - t0) / 1000), cancelled = REC.cancel; REC.r = null; recRelease();
+          if (cancelled) return;
+          var blob = new Blob(chunks, { type: r.mimeType || mime || 'audio/mp4' }), fr = new FileReader();
+          fr.onload = function () { recSay(e, { crc: 'rec-done', dataUrl: fr.result, mime: blob.type, size: blob.size, secs: secs }); };
+          fr.readAsDataURL(blob);
+        };
+        r.start(250); recSay(e, { crc: 'rec-started' });
+      }).catch(function (err) { recErr(e, err); });
+    }
+    if (d.crc === 'rec-stop' && REC.r && REC.r.state === 'recording') REC.r.stop();
+    if (d.crc === 'rec-cancel') { if (REC.r && REC.r.state === 'recording') { REC.cancel = true; REC.r.stop(); } else recRelease(); }
+  }
   // keep the sign-in here (this page's storage lasts; the app frame's doesn't on iPhone) and hand it only to our own app frame
   var KEY = 'crc_token_v1';
   function fromOurApp(src) { var w = src; for (var i = 0; i < 6 && w; i++) { if (w === document.getElementById('app').contentWindow) return true; if (w === w.parent) break; w = w.parent; } return false; }
@@ -117,6 +158,7 @@
       if (e.data.crc === 'hello') e.source.postMessage({ crc: 'token', token: localStorage.getItem(KEY) || '' }, e.origin);
       if (e.data.crc === 'token') { if (e.data.token) localStorage.setItem(KEY, e.data.token); else localStorage.removeItem(KEY); }
       if (/^push-/.test(e.data.crc)) onPushMessage(e);
+      if (/^rec-/.test(e.data.crc)) onRecMessage(e);
     } catch (x) {}
   });
   start();
